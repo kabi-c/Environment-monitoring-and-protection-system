@@ -1,0 +1,21 @@
+# adx_ingest.py
+from azure.kusto.data import KustoConnectionStringBuilder
+from azure.kusto.ingest import QueuedIngestClient, IngestionProperties, FileDescriptor
+import os
+
+CLUSTER = "https://<your-cluster>.kusto.windows.net"
+DATABASE = "<your-database>"
+# For auth: service principal recommended, or use AAD device auth for dev
+CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
+CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+TENANT_ID = os.getenv("AZURE_TENANT_ID")
+
+kcsb = KustoConnectionStringBuilder.with_aad_application_key_authentication(CLUSTER, CLIENT_ID, CLIENT_SECRET, TENANT_ID)
+ingest_client = QueuedIngestClient(kcsb)
+
+ingestion_props = IngestionProperties(database=DATABASE, table="air_quality_scores", data_format="csv")
+file_path = "/local/path/predictions.csv"  # from Databricks /dbfs path or storage account
+
+fd = FileDescriptor(file_path, 0)
+ingest_client.ingest_from_file(fd, ingestion_properties=ingestion_props)
+print("Ingestion triggered for", file_path)
