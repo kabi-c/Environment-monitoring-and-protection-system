@@ -1,0 +1,41 @@
+# Databricks: 1/6 - Spark config (only for dev; use secrets/instance profile in prod)
+spark._jsc.hadoopConfiguration().set("fs.s3a.access.key", dbutils.secrets.get(scope="aws", key="ACCESS_KEY"))
+spark._jsc.hadoopConfiguration().set("fs.s3a.secret.key", dbutils.secrets.get(scope="aws", key="SECRET_KEY"))
+spark._jsc.hadoopConfiguration().set("fs.s3a.endpoint", "s3.ap-south-1.amazonaws.com")
+
+# Databricks: 2/6 - Read JSON files from S3
+df = spark.read.json("s3a://env-monitor-data/sensor-data/")
+from pyspark.sql.functions import col, to_timestamp
+df = df.withColumn("timestamp", to_timestamp(col("timestamp")))
+display(df.limit(5))
+
+# Databricks: 3/6 - Basic cleaning & outlier removal
+clean_df = df.dropna()
+clean_df = clean_df.filter(col("pm2_5") < 500) # remove unrealistic values
+clean_df = clean_df.filter(col("co2") < 5000)
+display(clean_df.describe())
+
+# Databricks: 4/6 - Save cleaned data as Delta for reproducibility
+clean_df.write.format("delta").mode("append").save("/mnt/delta/clean_data")
+
+# Databricks: 5/6 - Convert to pandas for calling Azure ML endpoint (small batch)
+pandas_df = clean_df.toPandas().head(100)  # use small batch for demo
+
+# Databricks: 6/6 - Call Azure ML endpoint for predictions
+import requests, json, os
+AZURE_ML_ENDPOINT = dbutils.secrets.get(scope="azure", key="ML_ENDPOINT_URL")
+AZURE_ML_KEY = dbutils.secrets.get(scope="azure", key="ML_API_KEY")
+headers = {"Content-Type": "application/json", "Authorization": f"Bearer {AZURE_ML_KEY}"}
+
+# Prepare payload schema that matches your model's expected input
+payload = {"input_data": pandas_df.to_dict(orient="records")}
+resp = requests.post(AZURE_ML_ENDPOINT, headers=headers, json=payload)
+print("Status:", resp.status_code)
+preds = resp.json()
+# Attach predictions back to pandas_df (adjust according to response format)
+pandas_df['predicted_air_quality'] = [p['prediction'] for p in preds.get('predictions', pandas_df.to_dict(orient="records"))]
+
+# Save predictions to CSV for ingestion to ADX
+out_path = "/dbfs/tmp/predictions.csv"
+pandas_df.to_csv(out_path, index=False)
+print("Saved predictions to:", out_path)
